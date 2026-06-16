@@ -57,6 +57,11 @@ def _register_tool_def(tool_def: dict) -> bool:
     # metadata (e.g. for tag-based browsing/filtering) even though it no longer
     # gates loading.
     category = tool_def.get("category", "unknown")
+    # Upstream schema may emit a null/non-string category; coerce to a safe
+    # string so the tag set is always well-formed (a None/non-str tag would
+    # break tag-based browsing/filtering, or raise downstream).
+    if not category or not isinstance(category, str):
+        category = "unknown"
     mcp.tool(name=name, description=description, tags={category})(handler)
     _dynamic_tool_names.append(name)
     return True

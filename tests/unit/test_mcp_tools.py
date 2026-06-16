@@ -173,6 +173,82 @@ class TestRegisterToolsTransactional(unittest.TestCase):
         self.assertEqual(registry.dynamic_tool_names(), before)
 
 
+class TestRegisterToolCategoryCoercion(unittest.TestCase):
+    """A null/non-string upstream category must not break tag construction.
+
+    fastmcp validates that every tag is a string; a None or non-str category
+    raises pydantic ValidationError. The registry coerces such values to the
+    sentinel "unknown" so the tool still registers.
+    """
+
+    def tearDown(self):
+        registry.register_tools_from_schema([])
+
+    def _tags_for(self, name):
+        tool = asyncio.run(registry.mcp.local_provider.get_tool(name))
+        return tool.tags
+
+    def test_none_category_coerced_to_unknown(self):
+        count = registry.register_tools_from_schema(
+            [
+                {
+                    "name": "none_category_tool",
+                    "endpoint": "/none_category",
+                    "http_method": "GET",
+                    "input_schema": {"type": "object", "properties": {}},
+                    "category": None,
+                }
+            ]
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(self._tags_for("none_category_tool"), {"unknown"})
+
+    def test_non_string_category_coerced_to_unknown(self):
+        count = registry.register_tools_from_schema(
+            [
+                {
+                    "name": "int_category_tool",
+                    "endpoint": "/int_category",
+                    "http_method": "GET",
+                    "input_schema": {"type": "object", "properties": {}},
+                    "category": 123,
+                }
+            ]
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(self._tags_for("int_category_tool"), {"unknown"})
+
+    def test_empty_string_category_coerced_to_unknown(self):
+        count = registry.register_tools_from_schema(
+            [
+                {
+                    "name": "empty_category_tool",
+                    "endpoint": "/empty_category",
+                    "http_method": "GET",
+                    "input_schema": {"type": "object", "properties": {}},
+                    "category": "",
+                }
+            ]
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(self._tags_for("empty_category_tool"), {"unknown"})
+
+    def test_valid_category_preserved(self):
+        count = registry.register_tools_from_schema(
+            [
+                {
+                    "name": "valid_category_tool",
+                    "endpoint": "/valid_category",
+                    "http_method": "GET",
+                    "input_schema": {"type": "object", "properties": {}},
+                    "category": "analysis",
+                }
+            ]
+        )
+        self.assertEqual(count, 1)
+        self.assertEqual(self._tags_for("valid_category_tool"), {"analysis"})
+
+
 class TestEndpointTimeouts(unittest.TestCase):
     """Test endpoint timeout configuration."""
 
