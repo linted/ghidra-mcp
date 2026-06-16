@@ -13,11 +13,11 @@ The marginal cost of completeness is near zero with AI. Do the whole thing. Do i
 ## Architecture
 
 ```
-AI Tools <-> MCP Bridge (bridge_mcp_ghidra.py) <-> Ghidra Plugin (GhidraMCPPlugin.jar)
+AI Tools <-> MCP Bridge (python/ghidra_mcp_bridge/) <-> Ghidra Plugin (GhidraMCPPlugin.jar)
 ```
 
 - **Plugin**: `src/main/java/com/xebyte/GhidraMCPPlugin.java` -- HTTP server, delegates to services
-- **Bridge**: `bridge_mcp_ghidra.py` (~2,200 lines) -- dynamic tool registration from `/mcp/schema` + static tools (7 instance/tool-group/import: `list_instances`, `connect_instance`, `list_tool_groups`, `load_tool_group`, `unload_tool_group`, `check_tools`, `import_file`; + 22 debugger proxy via `GHIDRA_DEBUGGER_URL`)
+- **Bridge**: `python/ghidra_mcp_bridge/` (Python package, entry point `ghidra-mcp-bridge` → `server.main`; run via `uv run ghidra-mcp-bridge`) -- dynamic tool registration from `/mcp/schema` + static tools (`list_instances`, `connect_instance`, `import_file`; + 22 debugger proxy tools via `GHIDRA_DEBUGGER_URL`). The ~200 dynamic Ghidra tools stay registered but hidden from `list_tools` behind a BM25 search transform; clients discover them via `search_tools` and invoke via `call_tool`. Modules: `app` (FastMCP singleton), `server` (startup/CLI/auto-connect), `connection` (transport state + dispatch/reconnect), `transport` (UDS/TCP HTTP + socket-dir discovery), `discovery`, `schema`, `registry`, `tools`, `debugger`, `config`, `validation`.
 - **Service Layer**: `src/main/java/com/xebyte/core/` -- 14 service classes (~20K lines), `@McpTool`/`@Param` annotated. v5.4.0 adds `EmulationService` (P-code emulation), `DebuggerService` (TraceRmi wrapping — GUI-only)
 - **Debugger (Python)**: `debugger/` -- standalone HTTP server on port 8099 (engine, protocol, tracing, address_map, d2/ conventions). Bridge proxies via `GHIDRA_DEBUGGER_URL` env var.
 - **Headless**: `src/main/java/com/xebyte/headless/` -- standalone server without GUI. Includes `HeadlessManagementService` for program/project lifecycle.
@@ -94,8 +94,8 @@ state when modal dialogs may be present.
 ## Running the MCP Server
 
 ```bash
-python bridge_mcp_ghidra.py                  # stdio (recommended for AI tools)
-python bridge_mcp_ghidra.py --transport sse   # SSE (web/HTTP clients)
+uv run ghidra-mcp-bridge                      # stdio (recommended for AI tools)
+uv run ghidra-mcp-bridge --transport sse      # SSE (web/HTTP clients)
 python -m pip install -r requirements-debugger.txt  # optional debugger deps
 python -m debugger                            # standalone debugger server on :8099
 ```
@@ -108,7 +108,7 @@ Ghidra HTTP endpoint: `http://127.0.0.1:8089`
 2. AnnotationScanner auto-discovers it -- no bridge or registry changes needed
 3. Add entry to `tests/endpoints.json` with path, method, category, description
 
-For complex tools needing bridge-side logic (retries, multi-call orchestration), add a static `@mcp.tool()` in `bridge_mcp_ghidra.py` and add the name to `STATIC_TOOL_NAMES`.
+For complex tools needing bridge-side logic (retries, multi-call orchestration), add a static `@mcp.tool()` in `python/ghidra_mcp_bridge/tools.py` (or `debugger.py`) and add the name to `STATIC_TOOL_NAMES` in `python/ghidra_mcp_bridge/config.py`.
 
 ## Code Conventions
 
@@ -156,7 +156,7 @@ Find the file(s) you edited below; run everything in that row. Always include th
 | Add/modify `@McpTool` / `@Param` annotation | Offline (Java) first — `EndpointsJsonParityTest` will fail if `tests/endpoints.json` is stale. Regenerate: `mvn test -Dtest=RegenerateEndpointsJson -Dregenerate=true`. Then Integration (Java). |
 | `src/main/java/com/xebyte/GhidraMCPPlugin.java` (HTTP routes) | Offline (Java) + `EndpointRegistrationTest` (integration) + `tests/performance/test_http_concurrency.py`. For UDS/TCP defaults + TCP port-range fallback (#175): manual verification with port 8089 occupied, expect bind on 8090; `/mcp/instance_info → tcp_port` should report the actual bound port. |
 | `src/main/java/com/xebyte/headless/*` | Offline (Java) + `tests/unit/test_setup_ghidra.py` + Integration (Java) headless run |
-| `bridge_mcp_ghidra.py` | `tests/unit/test_bridge_utils.py tests/unit/test_mcp_tools.py tests/unit/test_mcp_tool_functions.py tests/unit/test_response_schemas.py tests/unit/test_endpoint_catalog.py`. For multi-candidate socket dir scan (#170): `TestGetSocketDirCandidates` + `TestDiscoverInstancesMultiDir`. For TCP port-range scanner (#175): `TestTcpPortScan`. Bridge size cap currently 2250 lines — bump deliberately if exceeded. |
+| `python/ghidra_mcp_bridge/*` | `tests/bridge/ tests/unit/test_bridge_utils.py tests/unit/test_mcp_tools.py tests/unit/test_mcp_tool_functions.py tests/unit/test_response_schemas.py tests/unit/test_endpoint_catalog.py`. For multi-candidate socket dir scan (#170): `TestGetSocketDirCandidates` + `TestDiscoverInstancesMultiDir`. For TCP port-range scanner (#175): `TestTcpPortScan`. After changing runtime deps, regenerate `requirements.txt` from `pyproject.toml`: `uv export --no-dev --no-emit-project --no-hashes > requirements.txt`. |
 | `fun-doc/library_code_detector.py` — heuristic library-code classifier | `tests/performance/test_library_code_detector.py` (19-case unit suite) + `tests/performance/test_selector_invariants.py` (3 selector-skip cases). Live spot-check on a binary known to contain CRT/STL (e.g. anything compiled with MSVC `/MT`): confirm functions like `ParseSignedShort` classify but real user code (e.g. exported APIs) does not. |
 | `fun-doc/fun_doc.py` — state, sessions, locking, selector, scoring | `tests/performance/test_state_atomicity.py tests/performance/test_state_lock_reentrant.py tests/performance/test_selector_invariants.py tests/performance/test_event_bus_drain.py` + fun-doc benchmark (`--mock --tier fast --compare`) |
 | `fun-doc/fun_doc.py` — provider routing, prompt construction | `tests/performance/test_provider_selection.py tests/performance/test_ghidra_offline.py` + fun-doc benchmark |
@@ -169,7 +169,7 @@ Find the file(s) you edited below; run everything in that row. Always include th
 | `debugger/*` | `tests/unit/test_address_map.py tests/unit/test_d2_conventions.py tests/unit/test_debugger_engine.py tests/unit/test_debugger_server.py tests/unit/test_windbg.py` |
 | `tools/setup/*`, `build.gradle`, `pom.xml` | `tests/unit/test_setup_cli.py tests/unit/test_setup_ghidra.py tests/unit/test_gradle_tasks.py tests/unit/test_version_bump.py tests/unit/test_project_consistency.py` |
 | `tests/endpoints.json` hand-edit | Offline (Java) — `EndpointsJsonParityTest` verifies every `@McpTool` is listed and hand-authored descriptions are preserved |
-| CLI: `bridge_mcp_ghidra.py --transport`, `tools.setup` subcommands | `tests/unit/test_setup_cli.py` + manual invocation |
+| CLI: `ghidra-mcp-bridge --transport`, `tools.setup` subcommands | `tests/unit/test_setup_cli.py` + manual invocation |
 
 ### Commands
 
@@ -245,7 +245,7 @@ mvn test -Dtest=RegenerateEndpointsJson -Dregenerate=true
 - `src/main/java/com/xebyte/core/NamingConventions.java` — any change to the validation cascade
 - `src/main/java/com/xebyte/core/*.java` service changes that alter MCP tool behavior
 - `tests/endpoints.json` — tool schema / description changes (affects what the worker calls)
-- `bridge_mcp_ghidra.py` — bridge-level prompt caching, tool orchestration, provider routing
+- `python/ghidra_mcp_bridge/*` — bridge-level prompt caching, tool orchestration, provider routing
 - The provider client wrappers (minimax / gemini / claude / codex invocation paths)
 - `priority_queue.json`'s `config.provider_models` — the benchmark tests whatever model table is live
 

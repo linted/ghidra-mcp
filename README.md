@@ -258,7 +258,7 @@ v5.0 moves conventions from "things to remember" into the tool layer, where they
      "mcpServers": {
        "ghidra": {
          "command": "uv",
-         "args": ["run", "--script", "/path/to/ghidra-mcp/bridge_mcp_ghidra.py"]
+         "args": ["run", "--directory", "/path/to/ghidra-mcp", "ghidra-mcp-bridge"]
        }
      }
    }
@@ -279,14 +279,32 @@ yay -S ghidra-mcp        # or ghidra-mcp-git
 
 ### Basic Usage
 
+The bridge is the `ghidra-mcp-bridge` command. From a checkout, `uv run` resolves
+deps from the lockfile on the fly. You can also install it as a standalone tool so
+the command is on your `PATH`:
+
+```bash
+# From a source checkout (no install needed)
+uv run ghidra-mcp-bridge
+
+# Install as an isolated tool (uv, recommended) — then run `ghidra-mcp-bridge`
+uv tool install .
+
+# Or install with pip
+pip install .
+
+# Run a downloaded release wheel without installing it
+uvx --from ./ghidra_mcp_bridge-<version>-py3-none-any.whl ghidra-mcp-bridge
+```
+
 #### Option 1: Stdio Transport (Recommended for AI tools)
 ```bash
-python bridge_mcp_ghidra.py
+uv run ghidra-mcp-bridge
 ```
 
 #### Option 2: Streamable HTTP Transport (Recommended for web/HTTP clients)
 ```bash
-python bridge_mcp_ghidra.py --transport streamable-http --mcp-host 127.0.0.1 --mcp-port 8081
+uv run ghidra-mcp-bridge --transport streamable-http --mcp-host 127.0.0.1 --mcp-port 8081
 ```
 
 MCP client config for the HTTP transport (add to your client's MCP config file):
@@ -302,7 +320,7 @@ MCP client config for the HTTP transport (add to your client's MCP config file):
 
 #### Option 3: SSE Transport (Deprecated — use streamable-http instead)
 ```bash
-python bridge_mcp_ghidra.py --transport sse --mcp-host 127.0.0.1 --mcp-port 8081
+uv run ghidra-mcp-bridge --transport sse --mcp-host 127.0.0.1 --mcp-port 8081
 ```
 
 #### Bridge advanced flags
@@ -749,7 +767,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ### Components
 
-- **bridge_mcp_ghidra.py** — Python MCP server that translates MCP protocol to HTTP calls (225 catalog entries)
+- **python/ghidra_mcp_bridge/** — Python MCP server package (`ghidra-mcp-bridge` command) that translates MCP protocol to HTTP calls
 - **GhidraMCP.jar** — Ghidra plugin that exposes analysis capabilities via HTTP (175 GUI endpoints)
 - **GhidraMCPHeadlessServer** — Standalone headless server — 183 endpoints, no GUI required
 - **ghidra_scripts/** — Collection of automation scripts for common tasks
@@ -827,7 +845,7 @@ python -m tools.setup --help
 ### Project Structure
 ```
 ghidra-mcp/
-├── bridge_mcp_ghidra.py     # MCP server (Python, 225 catalog entries)
+├── python/ghidra_mcp_bridge/ # MCP server package (Python; `ghidra-mcp-bridge`)
 ├── src/main/java/           # Ghidra plugin + headless server (Java)
 │   └── com/xebyte/
 │       ├── GhidraMCPPlugin.java         # GUI plugin (196 endpoints)

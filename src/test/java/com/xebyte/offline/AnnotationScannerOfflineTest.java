@@ -125,7 +125,7 @@ public class AnnotationScannerOfflineTest extends TestCase {
     /**
      * Every tool descriptor in the schema must have the fields the Python bridge
      * depends on: path, method, params. Missing any of these breaks dynamic tool
-     * registration in {@code bridge_mcp_ghidra.py}.
+     * registration in the Python bridge ({@code python/ghidra_mcp_bridge/}).
      */
     public void testSchemaToolDescriptorsHaveRequiredFields() {
         String schema = scanner.generateSchema();

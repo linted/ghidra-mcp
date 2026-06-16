@@ -44,6 +44,16 @@ def build_rules(
             rf"\g<1>{new_version}\g<2>",
         ),
         ReplacementRule(repo_root / "pom.xml", rf"v{escaped_old}:", f"v{new_version}:"),
+        # Bridge package version. The release workflow builds a wheel named
+        # ghidra_mcp_bridge-<version>-py3-none-any.whl and the release notes
+        # reference that exact filename, so pyproject must track the release
+        # tag. Anchored to the [project] table's `version = "X.Y.Z"` so it
+        # doesn't rewrite the build-backend or dependency version pins.
+        ReplacementRule(
+            repo_root / "pyproject.toml",
+            rf'(?m)(^version = ")\d+\.\d+\.\d+(")',
+            rf"\g<1>{new_version}\g<2>",
+        ),
         ReplacementRule(
             repo_root / "src/main/resources/META-INF/MANIFEST.MF",
             rf"(Plugin-Version:\s*){escaped_old}",

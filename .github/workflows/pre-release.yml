@@ -119,7 +119,7 @@ jobs:
         echo "Running Python unit tests..."
         python -m pip install --upgrade pip
         pip install -q -r requirements-test.txt
-        pip install -q -r requirements.txt
+        pip install -q -e .
         python -m pytest tests/unit/ --no-cov -q
         echo "✅ Offline test gate passed"
 
@@ -165,8 +165,10 @@ jobs:
           fi
         fi
 
-        # Copy essential files
-        cp bridge_mcp_ghidra.py release/
+        # Build the Python bridge wheel (the bridge is now a package under
+        # python/ with the `ghidra-mcp-bridge` entry point, not a single script).
+        python -m pip install --upgrade pip build
+        python -m build --wheel --outdir release/
         cp requirements.txt release/
         cp README.md release/
         [ -f LICENSE ] && cp LICENSE release/
@@ -178,7 +180,7 @@ jobs:
       run: |
         VERSION="${{ github.event.inputs.version }}"
         BRANCH="${{ github.event.inputs.branch }}"
-        MCP_TOOLS=$(grep -c '@mcp.tool()' bridge_mcp_ghidra.py 2>/dev/null || echo "unknown")
+        MCP_TOOLS=$(python3 -c "import json; print(json.load(open('tests/endpoints.json'))['total_endpoints'])" 2>/dev/null || echo "unknown")
 
         cat > release_notes.md << GENEOF
         # GhidraMCP ${VERSION} Pre-Release
@@ -203,8 +205,8 @@ jobs:
         Same as stable releases:
         1. In Ghidra: **File > Install Extensions > Add** and select the ZIP
         2. Restart Ghidra, enable plugin
-        3. \`pip install -r requirements.txt\`
-        4. \`python bridge_mcp_ghidra.py\`
+        3. Install the bridge — uv: \`uv tool install ghidra_mcp_bridge-${VERSION}-py3-none-any.whl\` (or pip: \`pip install ghidra_mcp_bridge-${VERSION}-py3-none-any.whl\`)
+        4. \`ghidra-mcp-bridge\` (or without installing: \`uvx --from ghidra_mcp_bridge-${VERSION}-py3-none-any.whl ghidra-mcp-bridge\`)
 
         ---
 

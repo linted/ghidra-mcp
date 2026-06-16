@@ -576,14 +576,43 @@ function Install-PythonRequirementsFile {
 }
 
 function Install-PythonPackages {
-    $requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
-    if (-not (Test-Path $requirementsPath)) {
-        Write-LogWarning "requirements.txt not found, skipping Python dependency installation."
-        return
-    }
-
     $py = Get-PythonCommand
-    Install-PythonRequirementsFile -PythonCommand $py -RequirementsPath $requirementsPath -Description "Ensuring Python dependencies"
+
+    # The bridge is now an installable package (pyproject.toml) exposing the
+    # `ghidra-mcp-bridge` console script — not a standalone bridge_mcp_ghidra.py.
+    # Installing the project installs the package and its runtime deps (fastmcp)
+    # from pyproject, so a separate `-r requirements.txt` pass is not required.
+    $projectPath = Join-Path $PSScriptRoot "pyproject.toml"
+    if (Test-Path $projectPath) {
+        # Prefer uv (isolated tool install) when available; fall back to pip.
+        $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+        if ($uvCmd) {
+            $uvParameters = @("tool", "install", "--force", $PSScriptRoot)
+            if ($VerbosePreference -ne 'Continue') {
+                $uvParameters += "--quiet"
+            }
+            Invoke-CommandChecked -Command $uvCmd.Source -Arguments $uvParameters -Description "Installing the ghidra-mcp-bridge package (uv)"
+        }
+        else {
+            $pipParameters = @($py.PrefixParameters) + @("-m", "pip", "install")
+            if ($VerbosePreference -ne 'Continue') {
+                $pipParameters += @("-q", "--disable-pip-version-check")
+            }
+            $pipParameters += $PSScriptRoot
+            Invoke-CommandChecked -Command $py.Command -Arguments $pipParameters -Description "Installing the ghidra-mcp-bridge package (pip)"
+        }
+    }
+    else {
+        # Fallback for a stripped distribution that ships only requirements.txt.
+        $requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
+        if (Test-Path $requirementsPath) {
+            Install-PythonRequirementsFile -PythonCommand $py -RequirementsPath $requirementsPath -Description "Ensuring Python dependencies"
+        }
+        else {
+            Write-LogWarning "Neither pyproject.toml nor requirements.txt found; skipping Python dependency installation."
+            return
+        }
+    }
     if ($InstallDebuggerDeps) {
         $debuggerRequirementsPath = Join-Path $PSScriptRoot "requirements-debugger.txt"
         Install-PythonRequirementsFile -PythonCommand $py -RequirementsPath $debuggerRequirementsPath -Description "Ensuring debugger Python dependencies"
@@ -1022,43 +1051,11 @@ try {
     }
 }
 
-# Copy Python MCP bridge to Ghidra root
-$bridgeSourcePath = "$PSScriptRoot\bridge_mcp_ghidra.py"
-$requirementsSourcePath = "$PSScriptRoot\requirements.txt"
-
-if (Test-Path $bridgeSourcePath) {
-    try {
-        $bridgeDestinationPath = Join-Path $GhidraPath "bridge_mcp_ghidra.py"
-
-        # Remove existing bridge if it exists
-        if (Test-Path $bridgeDestinationPath) {
-            if ($PSCmdlet.ShouldProcess($bridgeDestinationPath, "Remove existing Python bridge")) {
-                Remove-Item $bridgeDestinationPath -Force
-                Write-LogSuccess "Removed existing bridge"
-            }
-        }
-
-        if ($PSCmdlet.ShouldProcess($bridgeDestinationPath, "Copy Python bridge to Ghidra root")) {
-            Copy-Item $bridgeSourcePath $bridgeDestinationPath -Force
-            Write-LogSuccess "Installed: bridge_mcp_ghidra.py → $GhidraPath"
-        }
-
-        # Also copy requirements.txt for convenience
-        if (Test-Path $requirementsSourcePath) {
-            $requirementsDestinationPath = Join-Path $GhidraPath "requirements.txt"
-            if ($PSCmdlet.ShouldProcess($requirementsDestinationPath, "Copy requirements.txt to Ghidra root")) {
-                Copy-Item $requirementsSourcePath $requirementsDestinationPath -Force
-                Write-LogSuccess "Installed: requirements.txt → $GhidraPath"
-            }
-        }
-
-    } catch {
-        Write-LogWarning "Failed to copy Python bridge: $($_.Exception.Message)"
-        Write-LogInfo "You can manually copy bridge_mcp_ghidra.py to your Ghidra installation"
-    }
-} else {
-    Write-LogWarning "Python bridge not found: $bridgeSourcePath"
-}
+# The Python MCP bridge is now an installed package (see Install-PythonPackages),
+# exposing the `ghidra-mcp-bridge` console script. There is no longer a single
+# bridge_mcp_ghidra.py to copy into the Ghidra root — invoke the bridge via the
+# installed command (or `uv run ghidra-mcp-bridge` from a checkout).
+Write-LogInfo "Python bridge is installed as the 'ghidra-mcp-bridge' command (run it to start the MCP server)."
 
 # Auto-activate GhidraMCP in FrontEnd (Project Manager) configuration
 # v4.1: Plugin loads in FrontEnd via the Utility package (ApplicationLevelPlugin)
@@ -1163,12 +1160,11 @@ Write-Host "   Plugin ZIP: $destinationPath"
 if ($userExtensionsDir) {
     Write-Host "   User Extension: $userExtensionsDir"
 }
-Write-Host "   Python Bridge: $GhidraPath\bridge_mcp_ghidra.py"
-Write-Host "   Requirements: $GhidraPath\requirements.txt"
+Write-Host "   Python Bridge: installed as the 'ghidra-mcp-bridge' command"
 Write-Host ""
 Write-LogInfo "Next Steps:"
 if ($NoAutoPrereqs) {
-    Write-Host "1. If needed (first time only), install Python dependencies: pip install -r requirements.txt"
+    Write-Host "1. If needed (first time only), install the Python bridge from the project root: uv tool install . (or pip install .)"
     if ($InstallDebuggerDeps) {
         Write-Host "   Debugger deps enabled: pip install -r requirements-debugger.txt"
     }
@@ -1187,7 +1183,7 @@ Write-Host "      - In CodeBrowser: Edit > Tool Options > GhidraMCP HTTP Server"
 Write-Host ""
 Write-LogInfo "Usage:"
 Write-Host "   Ghidra: Tools > GhidraMCP > Start MCP Server"
-Write-Host "   Python: python bridge_mcp_ghidra.py (from project root or Ghidra directory)"
+Write-Host "   Python: ghidra-mcp-bridge   (or 'uv run ghidra-mcp-bridge' from a checkout)"
 if ($InstallDebuggerDeps) {
     Write-Host "   Debugger: python -m debugger (from project root)"
 }

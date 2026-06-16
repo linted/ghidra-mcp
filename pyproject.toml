@@ -1,12 +1,12 @@
 [project]
 name = "ghidra-mcp-bridge"
-version = "0.1.0"
-description = "Add your description here"
+version = "5.13.1"
+description = "MCP↔HTTP bridge connecting AI tools to Ghidra reverse-engineering instances"
 readme = "README.md"
 authors = [
     { name = "linted", email = "10934700+linted@users.noreply.github.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=3,<4",
 ]

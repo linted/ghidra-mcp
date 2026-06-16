@@ -12,7 +12,7 @@ You are a coding agent working on **ghidra-mcp**, a Model Context Protocol serve
 ## Directory Structure
 
 - `src/` — Java source for Ghidra extension and headless server
-- `bridge_mcp_ghidra.py` — Python MCP bridge (main entry point)
+- `python/ghidra_mcp_bridge/` — Python MCP bridge package (entry point: `ghidra-mcp-bridge` → `server.main`)
 - `docs/` — Documentation and workflow prompts
 - `tests/` — Python unit tests and endpoint catalog
 - `CHANGELOG.md` — Version history

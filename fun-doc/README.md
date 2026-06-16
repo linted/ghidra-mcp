@@ -30,7 +30,7 @@ The dashboard is available at `http://127.0.0.1:5001/` by default.
 
 ## Prerequisites
 
-- A running GhidraMCP server (`bridge_mcp_ghidra.py` or the Ghidra plugin on port 8089)
+- A running GhidraMCP server (`uv run ghidra-mcp-bridge` or the Ghidra plugin on port 8089)
 - Claude Code CLI, Codex CLI, or a Minimax API key depending on which provider you use
 - Python packages from `requirements.txt`
 

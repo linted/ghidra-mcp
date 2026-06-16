@@ -11,10 +11,11 @@ ghidra-mcp/
 ├── CHANGELOG.md                 # Version history
 ├── CONTRIBUTING.md              # Contributor workflow
 ├── AGENTS.md / CLAUDE.md        # AI operator guidance
-├── bridge_mcp_ghidra.py         # Python MCP bridge
+├── python/ghidra_mcp_bridge/    # Python MCP bridge package (`ghidra-mcp-bridge`)
+├── pyproject.toml / uv.lock     # Python packaging + locked deps (uv)
 ├── pom.xml                      # Canonical Maven build
 ├── build.gradle                 # Secondary/manual Gradle path
-├── requirements*.txt            # Python dependencies
+├── requirements*.txt            # Python dependencies (requirements.txt generated from pyproject)
 ├── docs/                        # Maintained documentation
 ├── src/                         # Java plugin/headless server source
 ├── tests/                       # Python tests
@@ -83,7 +84,7 @@ workflows.
 | Task | Location |
 |------|----------|
 | Install and deploy | `python -m tools.setup ...` in the repo root |
-| Run the MCP bridge | `bridge_mcp_ghidra.py` |
+| Run the MCP bridge | `uv run ghidra-mcp-bridge` |
 | Read release notes | `docs/releases/` |
 | Read prompt docs | `docs/prompts/` |
 | Run Python tests | `tests/` |

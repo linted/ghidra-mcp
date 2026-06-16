@@ -112,7 +112,7 @@ Python files use **snake_case** following PEP 8:
 ✅ GOOD
 analyze_functions.py
 create_struct_workflow.py
-bridge_mcp_ghidra.py
+inventory_scorer.py
 ordinal_auto_fixer.py
 
 ❌ AVOID
@@ -159,7 +159,7 @@ snake_case Python scripts.
 
 ```
 ✅ GOOD
-bridge_mcp_ghidra.py
+library_code_detector.py
 ordinal_auto_fixer.py
 inventory_scorer.py
 ```

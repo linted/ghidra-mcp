@@ -11,6 +11,11 @@ from .app import mcp
 from .config import DEFAULT_TCP_URL, logger
 from .validation import validate_server_url
 
+# Strong references to fire-and-forget background tasks. asyncio only holds a
+# weak reference to a task, so without this a poll task can be garbage-collected
+# mid-run (documented CPython gotcha). Tasks remove themselves on completion.
+_background_tasks: set = set()
+
 
 def _connect_result(transport: str, count: int, **extra) -> str:
     """Build the JSON payload shared by the UDS and TCP connect paths."""
@@ -249,6 +254,8 @@ async def import_file(
                     logger.debug(f"Analysis poll error for {program_name}: {e}")
                 await asyncio.sleep(5)
 
-        asyncio.create_task(_poll_analysis())
+        task = asyncio.create_task(_poll_analysis())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     return result
