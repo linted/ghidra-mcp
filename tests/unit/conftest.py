@@ -11,8 +11,18 @@ import pytest
 from ghidra_mcp_bridge import connection
 
 
+def _clear_connection_state():
+    # reset() deliberately preserves the reconnect hints; for test isolation we
+    # drop them too so a transport activated in one test can't bleed into the
+    # next via the persisted _last_* / _connected_project globals.
+    connection.reset()
+    connection._connected_project = None
+    connection._last_tcp_url = None
+    connection._last_transport = "none"
+
+
 @pytest.fixture(autouse=True)
 def _reset_connection_state():
-    connection.reset()
+    _clear_connection_state()
     yield
-    connection.reset()
+    _clear_connection_state()

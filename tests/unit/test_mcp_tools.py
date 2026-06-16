@@ -249,6 +249,134 @@ class TestRegisterToolCategoryCoercion(unittest.TestCase):
         self.assertEqual(self._tags_for("valid_category_tool"), {"analysis"})
 
 
+class TestTcpReconnect(unittest.TestCase):
+    """A dropped/reset TCP session must auto-reconnect over TCP.
+
+    Before the fix, _try_reconnect() only scanned for UDS sockets, so a TCP-only
+    setup (no AF_UNIX, or GHIDRA_MCP_URL override) could never recover and was
+    told to "open the project" in a UI it may not be driving.
+    """
+
+    def setUp(self):
+        saved = (
+            connection._active_socket,
+            connection._active_tcp,
+            connection._transport_mode,
+            connection._connected_project,
+            connection._last_tcp_url,
+            connection._last_transport,
+        )
+
+        def _restore():
+            (
+                connection._active_socket,
+                connection._active_tcp,
+                connection._transport_mode,
+                connection._connected_project,
+                connection._last_tcp_url,
+                connection._last_transport,
+            ) = saved
+
+        self.addCleanup(_restore)
+
+    def test_reset_tcp_session_reconnects_over_tcp(self):
+        connection.activate_tcp("http://127.0.0.1:8089", project="Proj")
+        connection.reset()  # simulate a dropped session
+        self.assertEqual(connection.transport_mode(), "none")
+        # Reconnect hints survive reset().
+        self.assertEqual(connection.last_tcp_url(), "http://127.0.0.1:8089")
+        self.assertEqual(connection.last_transport(), "tcp")
+
+        with mock.patch.object(
+            registry, "fetch_and_register_schema", return_value=5
+        ) as fetch, mock.patch(
+            "ghidra_mcp_bridge.discovery.discover_instances"
+        ) as discover:
+            self.assertTrue(connection._try_reconnect())
+
+        fetch.assert_called_once()
+        discover.assert_not_called()  # TCP path must not need UDS discovery
+        self.assertEqual(connection.transport_mode(), "tcp")
+        self.assertEqual(connection.active_tcp(), "http://127.0.0.1:8089")
+
+    def test_tcp_reconnect_failure_resets_transport(self):
+        connection.activate_tcp("http://127.0.0.1:8089", project="Proj")
+        connection.reset()
+
+        with mock.patch.object(
+            registry,
+            "fetch_and_register_schema",
+            side_effect=ConnectionError("refused"),
+        ), mock.patch(
+            "ghidra_mcp_bridge.discovery.discover_instances", return_value=[]
+        ):
+            self.assertFalse(connection._try_reconnect())
+
+        # A failed reconnect must not strand a broken active transport.
+        self.assertEqual(connection.transport_mode(), "none")
+        # Hints remain so a later call can retry.
+        self.assertEqual(connection.last_tcp_url(), "http://127.0.0.1:8089")
+
+    def test_ensure_connected_message_is_tcp_oriented(self):
+        connection.activate_tcp("http://127.0.0.1:8089", project="Proj")
+        connection.reset()
+
+        with mock.patch.object(
+            registry,
+            "fetch_and_register_schema",
+            side_effect=ConnectionError("refused"),
+        ), mock.patch(
+            "ghidra_mcp_bridge.discovery.discover_instances", return_value=[]
+        ):
+            msg = connection._ensure_connected()
+
+        self.assertIsNotNone(msg)
+        self.assertIn("http://127.0.0.1:8089", msg)
+        self.assertIn("not reachable", msg)
+
+    def test_tcp_preferred_then_uds_fallback(self):
+        """A TCP-last session that can't reach TCP falls back to UDS scan."""
+        connection.activate_tcp("http://127.0.0.1:8089", project="Proj")
+        connection.reset()
+
+        call_order = []
+
+        def _fetch():
+            # Fail the first (TCP) attempt, succeed on the UDS attempt.
+            call_order.append(connection.transport_mode())
+            if connection.transport_mode() == "tcp":
+                raise ConnectionError("tcp down")
+            return 3
+
+        with mock.patch.object(
+            registry, "fetch_and_register_schema", side_effect=_fetch
+        ), mock.patch(
+            "ghidra_mcp_bridge.discovery.discover_instances",
+            return_value=[{"project": "Proj", "socket": "/tmp/sock"}],
+        ):
+            self.assertTrue(connection._try_reconnect())
+
+        self.assertEqual(call_order, ["tcp", "uds"])
+        self.assertEqual(connection.transport_mode(), "uds")
+
+    def test_uds_session_still_reconnects_over_uds(self):
+        """Regression: the UDS-first path is unchanged for UDS sessions."""
+        connection.activate_uds("/tmp/old-sock", "Proj")
+        connection.reset()
+        self.assertEqual(connection.last_transport(), "uds")
+
+        with mock.patch.object(
+            registry, "fetch_and_register_schema", return_value=1
+        ), mock.patch(
+            "ghidra_mcp_bridge.discovery.discover_instances",
+            return_value=[{"project": "Proj", "socket": "/tmp/new-sock"}],
+        ):
+            self.assertTrue(connection._try_reconnect())
+
+        self.assertEqual(connection.transport_mode(), "uds")
+        self.assertEqual(connection.active_socket(), "/tmp/new-sock")
+
+
 class TestEndpointTimeouts(unittest.TestCase):
     """Test endpoint timeout configuration."""
 

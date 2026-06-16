@@ -8,6 +8,7 @@ round-tripping a read-only dynamic Ghidra tool through the call_tool proxy.
 import json
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 
 def _text(result) -> str:
@@ -47,8 +48,14 @@ async def test_call_tool_proxy_invokes_dynamic_tool(mcp_client) -> None:
 
 
 async def test_call_tool_rejects_synthetic_names(mcp_client) -> None:
-    # The proxy must refuse to call itself or the search tool.
-    with pytest.raises(Exception):
+    # The proxy must refuse to call itself or the search tool. The transform
+    # raises a ValueError server-side, which the client surfaces as a ToolError
+    # carrying the rejection message -- assert on both so an unrelated failure
+    # (network/setup error, a different ToolError) can't pass this test.
+    with pytest.raises(ToolError) as excinfo:
         await mcp_client.call_tool(
             "call_tool", {"name": "search_tools", "arguments": {"query": "x"}}
         )
+    message = str(excinfo.value)
+    assert "synthetic" in message.lower()
+    assert "search_tools" in message

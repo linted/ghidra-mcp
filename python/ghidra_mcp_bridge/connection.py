@@ -22,6 +22,14 @@ _active_tcp: str | None = None  # TCP base URL (e.g. "http://127.0.0.1:8089")
 _transport_mode: str = "none"  # "uds", "tcp", or "none"
 _connected_project: str | None = None  # Project name for auto-reconnect
 
+# Last successful transport details, preserved across reset() so auto-reconnect
+# can retry the path that actually worked. _connected_project alone only enables
+# UDS reconnect (it's resolved by scanning for a matching socket); a TCP-only
+# setup (e.g. Windows without AF_UNIX) has no socket to scan for and needs the
+# saved URL to reconnect at all.
+_last_tcp_url: str | None = None  # TCP base URL of the last TCP session
+_last_transport: str = "none"  # "uds", "tcp", or "none" — last activated transport
+
 # Serialization lock for Ghidra HTTP calls — prevents stdout corruption when
 # multiple MCP tool calls arrive concurrently (see GitHub issue #91).
 _ghidra_lock = threading.Lock()
@@ -43,27 +51,45 @@ def connected_project() -> str | None:
     return _connected_project
 
 
+def last_tcp_url() -> str | None:
+    return _last_tcp_url
+
+
+def last_transport() -> str:
+    return _last_transport
+
+
 def activate_uds(socket_path: str, project: str | None) -> None:
     """Make a UDS socket the active transport."""
     global _active_socket, _active_tcp, _transport_mode, _connected_project
+    global _last_transport
     _active_socket = socket_path
     _active_tcp = None
     _transport_mode = "uds"
     _connected_project = project
+    _last_transport = "uds"
 
 
 def activate_tcp(url: str, project: str | None = None) -> None:
     """Make a TCP base URL the active transport."""
     global _active_socket, _active_tcp, _transport_mode, _connected_project
+    global _last_tcp_url, _last_transport
     _active_tcp = url
     _active_socket = None
     _transport_mode = "tcp"
     if project is not None:
         _connected_project = project
+    _last_tcp_url = url
+    _last_transport = "tcp"
 
 
 def reset() -> None:
-    """Drop the active transport (leaves _connected_project for reconnect)."""
+    """Drop the active transport.
+
+    Leaves the reconnect hints (_connected_project, _last_tcp_url,
+    _last_transport) intact so auto-reconnect can retry the path that last
+    worked.
+    """
     global _active_socket, _active_tcp, _transport_mode
     _active_socket = None
     _active_tcp = None
@@ -180,21 +206,42 @@ def _normalize_post_payload(endpoint: str, data: dict) -> dict:
 # ==========================================================================
 
 
-def _try_reconnect() -> bool:
-    """Try to reconnect to the previously connected project after Ghidra restarts.
+def _reconnect_tcp() -> bool:
+    """Re-establish the last TCP session against its saved URL.
 
-    Scans for UDS instances matching _connected_project. If found, updates the
-    active socket and re-fetches the schema. Returns True if reconnected.
+    A restarted Ghidra typically comes back on the same TCP port, so re-pointing
+    at _last_tcp_url and re-fetching the schema is enough. Returns True on
+    success; on failure the transport is reset so a later call can retry cleanly.
     """
-    # Imported lazily to avoid an import cycle (discovery and registry both
-    # import this module for connection state).
+    from .registry import fetch_and_register_schema
+
+    if not _last_tcp_url:
+        return False
+    activate_tcp(_last_tcp_url, _connected_project)
+    try:
+        fetch_and_register_schema()
+        logger.info(
+            f"Reconnected to project '{_connected_project or 'unknown'}' "
+            f"via TCP {_last_tcp_url}"
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"TCP reconnect schema fetch failed: {e}")
+        reset()
+        return False
+
+
+def _reconnect_uds() -> bool:
+    """Scan for a UDS instance matching _connected_project and reconnect to it.
+
+    Returns True on success; on a schema-fetch failure the transport is reset so
+    a later call can retry cleanly.
+    """
     from .discovery import discover_instances
     from .registry import fetch_and_register_schema
 
     if not _connected_project:
         return False
-
-    instances = discover_instances()
 
     def _attempt(inst: dict) -> bool:
         activate_uds(inst["socket"], _connected_project)
@@ -207,8 +254,10 @@ def _try_reconnect() -> bool:
             return True
         except Exception as e:
             logger.warning(f"Reconnect schema fetch failed: {e}")
+            reset()
             return False
 
+    instances = discover_instances()
     # Exact match first, then substring.
     for inst in instances:
         if inst.get("project", "") == _connected_project:
@@ -220,18 +269,45 @@ def _try_reconnect() -> bool:
     return False
 
 
+def _try_reconnect() -> bool:
+    """Try to reconnect to the previous instance after Ghidra restarts.
+
+    Prefers the transport that last worked: a TCP session retries its saved URL
+    first, a UDS session re-scans for a matching socket. The other transport is
+    tried as a fallback so a setup that switched transports can still recover.
+    Returns True if reconnected.
+    """
+    if _last_transport == "tcp":
+        return _reconnect_tcp() or _reconnect_uds()
+    return _reconnect_uds() or _reconnect_tcp()
+
+
 def _ensure_connected() -> str | None:
     """Check connection and attempt reconnect if needed. Returns error string or None."""
-    if _transport_mode == "none":
-        if _connected_project:
-            if _try_reconnect():
-                return None
-            return (
-                f"Ghidra instance for project '{_connected_project}' is not running. "
-                "Start Ghidra and open the project, then retry."
-            )
-        return "No Ghidra instance connected. Use connect_instance() first."
-    return None
+    if _transport_mode != "none":
+        return None
+
+    if (_connected_project or _last_tcp_url) and _try_reconnect():
+        return None
+
+    # Tailor the guidance to the transport that last worked so a TCP-only setup
+    # isn't told to "open the project" in a Ghidra UI it may not be driving.
+    if _last_transport == "tcp" and _last_tcp_url:
+        target = (
+            f"project '{_connected_project}' at {_last_tcp_url}"
+            if _connected_project
+            else _last_tcp_url
+        )
+        return (
+            f"Ghidra instance ({target}) is not reachable. "
+            "Start Ghidra (and open the project) on that endpoint, then retry."
+        )
+    if _connected_project:
+        return (
+            f"Ghidra instance for project '{_connected_project}' is not running. "
+            "Start Ghidra and open the project, then retry."
+        )
+    return "No Ghidra instance connected. Use connect_instance() first."
 
 
 # ==========================================================================
