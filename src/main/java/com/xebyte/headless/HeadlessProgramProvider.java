@@ -22,10 +22,15 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.opinion.Loaded;
 import ghidra.app.util.opinion.LoadResults;
 import ghidra.base.project.GhidraProject;
+import ghidra.framework.data.CheckinHandler;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectData;
+import ghidra.framework.protocol.ghidra.GhidraURL;
+import ghidra.framework.protocol.ghidra.GhidraURLConnection;
+import ghidra.framework.protocol.ghidra.GhidraURLWrappedContent;
+import ghidra.framework.protocol.ghidra.Handler;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.lang.CompilerSpec;
 import ghidra.program.model.lang.CompilerSpecID;
@@ -39,6 +44,7 @@ import ghidra.util.task.ConsoleTaskMonitor;
 import ghidra.util.task.TaskMonitor;
 
 import java.io.File;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +63,15 @@ public class HeadlessProgramProvider implements ProgramProvider {
     private final TaskMonitor monitor;
     private Project project;
     private GhidraProject ghidraProject;  // For headless project management
+
+    /**
+     * Server-bound programs opened via {@link #openProgramFromServer}. The
+     * {@link GhidraURLWrappedContent} keeps the transient, server-bound
+     * {@code ProjectData} alive (we are a registered consumer of its
+     * {@link DomainFile}); it must be released on close or the connection
+     * leaks. Keyed by program name to mirror {@link #openPrograms}.
+     */
+    private final Map<String, ServerFileHandle> serverHandles = new ConcurrentHashMap<>();
 
     /**
      * Create a new HeadlessProgramProvider.
@@ -425,6 +440,294 @@ public class HeadlessProgramProvider implements ProgramProvider {
         }
     }
 
+    // ========================================================================
+    // Ghidra Server: open + persist programs from a shared repository
+    // ========================================================================
+
+    /**
+     * Open a program that lives in a Ghidra Server shared repository directly,
+     * without a persistent local shared project.
+     *
+     * <p>Resolves {@code ghidra://host:port/repo/path} via the Ghidra URL
+     * protocol ({@link GhidraURLConnection}), which builds a transient,
+     * server-bound {@link ProjectData}. Unlike the low-level
+     * {@link GhidraServerManager} {@code RepositoryAdapter} path — which can
+     * browse and take server-side checkouts but cannot open a {@link Program}
+     * or check edits back in — the {@link DomainFile} obtained here supports
+     * both {@code getDomainObject()} and {@code checkin()}. This single entry
+     * point unblocks the open <em>and</em> persist gaps.
+     *
+     * <p>When {@code readOnly} is false the file is checked out exclusively on
+     * <em>this</em> connection so that {@link #saveAndCheckin} can later persist
+     * edits over the same connection. (Server-side checkouts taken on the
+     * separate {@link GhidraServerManager} connection do not help here and can
+     * actually block this checkout — see the discussion in the upstream plan.)
+     *
+     * @param host     Ghidra server host
+     * @param port     Ghidra server port
+     * @param repo     repository name (e.g. {@code "agent-shared"})
+     * @param path     program path within the repository (e.g. {@code "/D2Client.dll"})
+     * @param readOnly when true, open for analysis only (no checkout)
+     * @return structured result; {@link ProgramLoadResult#program} is registered
+     *         in {@link #openPrograms} on success
+     */
+    public ProgramLoadResult openProgramFromServer(String host, int port, String repo,
+                                                   String path, boolean readOnly) {
+        if (repo == null || repo.trim().isEmpty()) {
+            return ProgramLoadResult.failure("repo is required");
+        }
+        if (path == null || path.trim().isEmpty()) {
+            return ProgramLoadResult.failure("path is required");
+        }
+        repo = repo.trim();
+        path = path.trim();
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+
+        GhidraURLWrappedContent wrapped = null;
+        Object content = null;
+        try {
+            // Register the ghidra:// URL stream handler (idempotent).
+            Handler.registerHandler();
+
+            URL url = GhidraURL.makeURL(host, port, repo, path);
+            GhidraURLConnection conn = new GhidraURLConnection(url);
+            conn.setReadOnly(readOnly);
+
+            // getContent() drives the connect/login (credentials are supplied by
+            // the ClientUtil authenticator GhidraServerManager registered).
+            Object obj = conn.getContent();
+            GhidraURLConnection.StatusCode status = conn.getStatusCode();
+            if (status != GhidraURLConnection.StatusCode.OK) {
+                return ProgramLoadResult.failure(
+                    "Server returned " + status + " for ghidra://" + host + ":" + port
+                    + "/" + repo + path);
+            }
+            if (!(obj instanceof GhidraURLWrappedContent)) {
+                return ProgramLoadResult.failure(
+                    "URL did not resolve to repository content (got "
+                    + (obj == null ? "null" : obj.getClass().getSimpleName()) + "): " + path);
+            }
+
+            wrapped = (GhidraURLWrappedContent) obj;
+            // Registers `this` as a consumer; we must release() on close.
+            content = wrapped.getContent(this);
+            if (!(content instanceof DomainFile)) {
+                wrapped.release(content, this);
+                return ProgramLoadResult.failure(
+                    "Path refers to a folder, not a program file: " + path);
+            }
+
+            DomainFile df = (DomainFile) content;
+            if (!"Program".equals(df.getContentType())) {
+                wrapped.release(content, this);
+                return ProgramLoadResult.failure(
+                    "Not a Program file (content type '" + df.getContentType() + "'): " + path);
+            }
+
+            // For write sessions, take an exclusive checkout on THIS connection so
+            // a later checkin can persist over the same DomainFile.
+            if (!readOnly && df.isVersioned() && !df.isCheckedOut()) {
+                boolean ok = df.checkout(true /*exclusive*/, monitor);
+                if (!ok) {
+                    wrapped.release(content, this);
+                    return ProgramLoadResult.failure(
+                        "Could not check out '" + path + "' (already checked out exclusively "
+                        + "by another user?). Retry with read_only=true for analysis-only access.");
+                }
+            }
+
+            Program program = (Program) df.getDomainObject(this, true /*upgrade*/,
+                false /*recover*/, monitor);
+            if (program == null) {
+                wrapped.release(content, this);
+                return ProgramLoadResult.failure(
+                    "getDomainObject returned null for: " + path);
+            }
+
+            String name = program.getName();
+            openPrograms.put(name, program);
+            serverHandles.put(name, new ServerFileHandle(wrapped, content));
+            if (currentProgram == null) {
+                currentProgram = program;
+            }
+            Msg.info(this, "Opened server program: " + name + " from ghidra://" + host + ":"
+                + port + "/" + repo + path + " (readOnly=" + readOnly + ")");
+            return ProgramLoadResult.success(program);
+        } catch (Exception e) {
+            // Release the consumer reference if we acquired it before failing.
+            if (wrapped != null && content != null) {
+                try {
+                    wrapped.release(content, this);
+                } catch (Exception ignore) {
+                    // best-effort cleanup
+                }
+            }
+            Msg.error(this, "Error opening server program: " + path, e);
+            return ProgramLoadResult.failure(
+                "Open from server failed (" + e.getClass().getSimpleName() + "): " + e.getMessage());
+        }
+    }
+
+    /**
+     * Save the program's in-memory edits to its checked-out copy and check the
+     * new version back in to the Ghidra Server. Operates on the live
+     * {@link DomainFile} backing an open program (typically one opened via
+     * {@link #openProgramFromServer}).
+     *
+     * @param programName    open program to check in (empty = current program)
+     * @param comment        version comment
+     * @param keepCheckedOut keep the file checked out after check-in (for further edits)
+     * @return JSON status string
+     */
+    public String saveAndCheckin(String programName, String comment, boolean keepCheckedOut) {
+        Program program = getProgram(programName);
+        if (program == null) {
+            return "{\"error\": \"Program not open: " + escapeJson(programName) + "\"}";
+        }
+        DomainFile df = program.getDomainFile();
+        if (df == null) {
+            return "{\"error\": \"Program has no domain file (not server-bound): "
+                + escapeJson(program.getName()) + "\"}";
+        }
+        if (!df.isVersioned()) {
+            return "{\"error\": \"File is not under version control. Use "
+                + "/server/version_control/add first: " + escapeJson(df.getPathname()) + "\"}";
+        }
+        if (!df.isCheckedOut()) {
+            return "{\"error\": \"File is not checked out (reopen with read_only=false): "
+                + escapeJson(df.getPathname()) + "\"}";
+        }
+        try {
+            // Persist in-memory edits to the checked-out local copy first.
+            df.save(monitor);
+
+            if (!df.canCheckin()) {
+                return "{\"status\": \"no_changes\", \"program\": \""
+                    + escapeJson(program.getName()) + "\", \"path\": \""
+                    + escapeJson(df.getPathname()) + "\", \"message\": \"Nothing to check in\"}";
+            }
+
+            final String checkinComment = (comment == null) ? "" : comment;
+            df.checkin(new CheckinHandler() {
+                @Override
+                public String getComment() {
+                    return checkinComment;
+                }
+
+                @Override
+                public boolean keepCheckedOut() {
+                    return keepCheckedOut;
+                }
+
+                @Override
+                public boolean createKeepFile() {
+                    return false;
+                }
+            }, monitor);
+
+            return "{\"status\": \"checked_in\", \"program\": \"" + escapeJson(program.getName())
+                + "\", \"path\": \"" + escapeJson(df.getPathname())
+                + "\", \"keep_checked_out\": " + keepCheckedOut + "}";
+        } catch (Exception e) {
+            Msg.error(this, "Checkin failed for " + program.getName(), e);
+            return "{\"error\": \"Checkin failed: " + escapeJson(e.getMessage()) + "\"}";
+        }
+    }
+
+    /**
+     * Undo the checkout for an open server program, discarding (or keeping) the
+     * local copy. The caller should generally {@link #closeProgram} the program
+     * first; an open domain object can block the undo.
+     *
+     * @param programName open program (empty = current program)
+     * @param keepLocal   keep a non-versioned local copy of the changes
+     * @return JSON status string
+     */
+    public String undoServerCheckout(String programName, boolean keepLocal) {
+        Program program = getProgram(programName);
+        if (program == null) {
+            return "{\"error\": \"Program not open: " + escapeJson(programName) + "\"}";
+        }
+        DomainFile df = program.getDomainFile();
+        if (df == null) {
+            return "{\"error\": \"Program has no domain file (not server-bound): "
+                + escapeJson(program.getName()) + "\"}";
+        }
+        if (!df.isCheckedOut()) {
+            return "{\"error\": \"File is not checked out: " + escapeJson(df.getPathname()) + "\"}";
+        }
+        try {
+            df.undoCheckout(keepLocal);
+            return "{\"status\": \"checkout_undone\", \"program\": \"" + escapeJson(program.getName())
+                + "\", \"path\": \"" + escapeJson(df.getPathname())
+                + "\", \"kept_copy\": " + keepLocal + "}";
+        } catch (Exception e) {
+            Msg.error(this, "Undo checkout failed for " + program.getName(), e);
+            return "{\"error\": \"Undo checkout failed: " + escapeJson(e.getMessage()) + "\"}";
+        }
+    }
+
+    /**
+     * Add a not-yet-versioned open program to version control (first commit).
+     *
+     * @param programName    open program (empty = current program)
+     * @param comment        initial version comment
+     * @param keepCheckedOut keep the file checked out after the initial add
+     * @return JSON status string
+     */
+    public String addProgramToVersionControl(String programName, String comment,
+                                             boolean keepCheckedOut) {
+        Program program = getProgram(programName);
+        if (program == null) {
+            return "{\"error\": \"Program not open: " + escapeJson(programName) + "\"}";
+        }
+        DomainFile df = program.getDomainFile();
+        if (df == null) {
+            return "{\"error\": \"Program has no domain file (not server-bound): "
+                + escapeJson(program.getName()) + "\"}";
+        }
+        if (df.isVersioned()) {
+            return "{\"error\": \"File is already under version control: "
+                + escapeJson(df.getPathname()) + "\"}";
+        }
+        try {
+            df.save(monitor);
+            df.addToVersionControl((comment == null) ? "" : comment, keepCheckedOut, monitor);
+            return "{\"status\": \"added\", \"program\": \"" + escapeJson(program.getName())
+                + "\", \"path\": \"" + escapeJson(df.getPathname())
+                + "\", \"keep_checked_out\": " + keepCheckedOut + "}";
+        } catch (Exception e) {
+            Msg.error(this, "Add to version control failed for " + program.getName(), e);
+            return "{\"error\": \"Add to version control failed: " + escapeJson(e.getMessage()) + "\"}";
+        }
+    }
+
+    private String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+
+    /**
+     * Holds the {@link GhidraURLWrappedContent} consumer reference for a
+     * server-opened program so it can be released on close. {@code content} is
+     * the {@link DomainFile} returned by {@link GhidraURLWrappedContent#getContent}.
+     */
+    private static final class ServerFileHandle {
+        final GhidraURLWrappedContent wrapped;
+        final Object content;
+
+        ServerFileHandle(GhidraURLWrappedContent wrapped, Object content) {
+            this.wrapped = wrapped;
+            this.content = content;
+        }
+    }
+
     /** Structured result from {@link #loadProgramFromProjectDetailed}. */
     public static class ProgramLoadResult {
         public final boolean success;
@@ -499,6 +802,7 @@ public class HeadlessProgramProvider implements ProgramProvider {
         } catch (Exception e) {
             Msg.warn(this, "Error releasing program: " + e.getMessage());
         }
+        releaseServerHandle(program.getName());
         return true;
     }
 
@@ -514,7 +818,35 @@ public class HeadlessProgramProvider implements ProgramProvider {
             }
         }
         openPrograms.clear();
+        // Release any server-bound URL consumers so transient project
+        // connections don't leak after a bulk close (e.g. server shutdown).
+        for (Map.Entry<String, ServerFileHandle> entry : serverHandles.entrySet()) {
+            ServerFileHandle handle = entry.getValue();
+            try {
+                handle.wrapped.release(handle.content, this);
+            } catch (Exception e) {
+                Msg.warn(this, "Error releasing server handle for " + entry.getKey()
+                    + ": " + e.getMessage());
+            }
+        }
+        serverHandles.clear();
         currentProgram = null;
+    }
+
+    /**
+     * Release the {@link GhidraURLWrappedContent} consumer reference for a
+     * server-opened program, if present. No-op for locally-loaded programs.
+     */
+    private void releaseServerHandle(String programName) {
+        ServerFileHandle handle = serverHandles.remove(programName);
+        if (handle != null) {
+            try {
+                handle.wrapped.release(handle.content, this);
+            } catch (Exception e) {
+                Msg.warn(this, "Error releasing server handle for " + programName
+                    + ": " + e.getMessage());
+            }
+        }
     }
 
     /**

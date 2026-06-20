@@ -186,6 +186,61 @@ public class HeadlessManagementService {
         return Response.ok(body);
     }
 
+    @McpTool(path = "/open_program_from_server", method = "POST",
+            description = "Open a program directly from a Ghidra Server shared repository "
+                + "(ghidra://host:port/repo/path) into the headless engine — no persistent local "
+                + "shared project required. Auto-connects to the configured server if needed. When "
+                + "`read_only` is false (default), the file is checked out exclusively so edits can "
+                + "later be persisted with /server/version_control/checkin. The opened program is "
+                + "registered like any other, so /list_open_programs, decompile, rename, etc. see it.",
+            category = "headless")
+    public Response openProgramFromServer(
+            @Param(value = "repo", source = ParamSource.BODY,
+                description = "Repository name on the server (e.g. 'agent-shared')") String repo,
+            @Param(value = "path", source = ParamSource.BODY,
+                description = "Program path within the repository (e.g. '/D2Client.dll')") String path,
+            @Param(value = "read_only", source = ParamSource.BODY, defaultValue = "false",
+                description = "Open for analysis only with no checkout. When false, the file is "
+                    + "checked out exclusively so edits can be checked back in.") boolean readOnly) {
+        if (repo == null || repo.isEmpty()) {
+            return Response.err("repo required");
+        }
+        if (path == null || path.isEmpty()) {
+            return Response.err("path required");
+        }
+
+        // The ghidra:// URL handler reuses the credentials the server manager
+        // registered via ClientUtil — ensure a live connection first so the
+        // open doesn't prompt (and fail) in headless mode.
+        if (!serverManager.isConnected()) {
+            String connResult = serverManager.connect();
+            if (!serverManager.isConnected()) {
+                return Response.err("Not connected to Ghidra server (auto-connect failed): "
+                    + connResult);
+            }
+        }
+
+        HeadlessProgramProvider.ProgramLoadResult res = programProvider.openProgramFromServer(
+            serverManager.getHost(), serverManager.getPort(), repo, path, readOnly);
+
+        if (res.success) {
+            Map<String, Object> ok = new LinkedHashMap<>();
+            ok.put("success", true);
+            ok.put("program", res.program.getName());
+            ok.put("repo", repo);
+            ok.put("path", path);
+            ok.put("read_only", readOnly);
+            return Response.ok(ok);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", false);
+        body.put("error", res.error);
+        body.put("repo", repo);
+        body.put("requested_path", path);
+        return Response.ok(body);
+    }
+
     @McpTool(path = "/get_project_info", description = "Get info about the currently open project, including server-binding state. A shared (server-bound) project is required for /server/version_control/checkout to deliver content the headless can open; if `project_server_bound` is false, the open project is local-only.", category = "headless")
     public Response getProjectInfo() {
         if (!programProvider.hasProject()) {
