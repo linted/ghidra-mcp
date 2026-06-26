@@ -105,6 +105,13 @@ public class GhidraMCPHeadlessServer implements GhidraLaunchable {
 
         managementService = new HeadlessManagementService(programProvider, serverManager);
 
+        // Optionally mount a shared (server-bound) project at startup so the configured
+        // Ghidra Server repository is immediately listable/openable. Env-guarded: only
+        // runs when GHIDRA_SERVER_REPOSITORY is set. Continue-on-failure so the engine
+        // still boots if the server is unreachable (it can be mounted later via
+        // /open_project {"repo": ...}).
+        mountSharedProjectIfConfigured();
+
         // Load initial programs if specified
         loadInitialPrograms(args);
 
@@ -127,6 +134,48 @@ public class GhidraMCPHeadlessServer implements GhidraLaunchable {
                 }
             }
         }
+    }
+
+    /**
+     * Create-or-open a server-bound (shared) project bound to the repository named by
+     * {@code GHIDRA_SERVER_REPOSITORY}, reusing the same provider path as the
+     * /open_project {"repo": ...} endpoint. No-op when the env var is unset.
+     *
+     * <p>The Ghidra Server may still be starting when the engine boots, so this retries
+     * with a bounded loop (~60s). Failure is non-fatal — the engine continues to start
+     * and the project can be mounted later via the endpoint.
+     */
+    private void mountSharedProjectIfConfigured() {
+        String repo = System.getenv("GHIDRA_SERVER_REPOSITORY");
+        if (repo == null || repo.isEmpty()) {
+            return;
+        }
+        String projDir = envOrDefault("GHIDRA_SHARED_PROJECT_DIR", "/projects");
+        String projName = envOrDefault("GHIDRA_SHARED_PROJECT_NAME", repo);
+        for (int attempt = 1; attempt <= 30; attempt++) {     // server may still be starting (~60s bound)
+            try {
+                ghidra.framework.client.RepositoryAdapter ra = serverManager.getRepositoryAdapter(repo);
+                if (ra != null && programProvider.openOrCreateSharedProject(projDir, projName, ra)) {
+                    System.out.println("Mounted shared project '" + projName + "' bound to repo '" + repo + "'");
+                    return;
+                }
+            } catch (Exception e) {
+                System.err.println("Shared-project mount attempt " + attempt + " failed: " + e.getMessage());
+            }
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        System.err.println("Could not mount shared project for repo '" + repo
+            + "' after retries; continuing without it (mount later via /open_project {\"repo\": ...}).");
+    }
+
+    private static String envOrDefault(String name, String defaultValue) {
+        String value = System.getenv(name);
+        return (value != null && !value.isEmpty()) ? value : defaultValue;
     }
 
     private void parseArgs(String[] args) {

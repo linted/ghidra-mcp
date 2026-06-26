@@ -23,11 +23,14 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.opinion.Loaded;
 import ghidra.app.util.opinion.LoadResults;
 import ghidra.base.project.GhidraProject;
+import ghidra.framework.client.RepositoryAdapter;
 import ghidra.framework.data.CheckinHandler;
 import ghidra.framework.model.DomainFile;
 import ghidra.framework.model.DomainFolder;
 import ghidra.framework.model.Project;
 import ghidra.framework.model.ProjectData;
+import ghidra.framework.model.ProjectLocator;
+import ghidra.framework.project.DefaultProjectManager;
 import ghidra.framework.protocol.ghidra.GhidraURL;
 import ghidra.framework.protocol.ghidra.GhidraURLConnection;
 import ghidra.framework.protocol.ghidra.GhidraURLWrappedContent;
@@ -1300,6 +1303,61 @@ public class HeadlessProgramProvider implements ProgramProvider {
             return project != null;
         } catch (Exception e) {
             Msg.error(this, "Error creating project: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * {@link DefaultProjectManager}'s constructor is protected; a trivial subclass
+     * gives us an instantiable manager for mounting server-bound projects without a
+     * GUI (the same pattern HeadlessAnalyzer uses internally).
+     */
+    private static final class HeadlessProjectManager extends DefaultProjectManager {
+    }
+
+    /**
+     * Create-or-open a <em>server-bound</em> (shared) project mounted to a Ghidra
+     * Server repository. If a project already exists on disk at the given location it
+     * is re-opened (so restarts reuse the cached local project); otherwise a new one is
+     * created and bound to {@code repo}. A non-null {@link RepositoryAdapter} is what
+     * makes the project server-bound — afterwards {@link #listProjectFiles},
+     * {@link #loadProgramFromProjectDetailed} and {@link #getProjectServerInfo} all see
+     * the repository's content because they read through {@code project.getProjectData()}.
+     *
+     * <p>{@code restore=true} on the open path mirrors the rationale in the local
+     * {@link #openProject} ({@code GhidraProject.openProject(..., true)}): the container
+     * typically runs as {@code root} while the server user is {@code agent}, so ownership
+     * checks must be bypassed.
+     *
+     * @param parentDir local cache directory for the project (e.g. a mounted /projects volume)
+     * @param name      project name
+     * @param repo      a connected repository adapter from {@code GhidraServerManager}
+     * @return true if a server-bound project is now mounted
+     */
+    public boolean openOrCreateSharedProject(String parentDir, String name, RepositoryAdapter repo) {
+        try {
+            File dir = new File(parentDir);
+            if (!dir.exists() && !dir.mkdirs()) {
+                Msg.error(this, "Could not create project cache dir: " + parentDir);
+                return false;
+            }
+            if (project != null) {
+                closeProject();
+            }
+            ProjectLocator locator = new ProjectLocator(parentDir, name);
+            HeadlessProjectManager pm = new HeadlessProjectManager();
+            Project p = locator.getMarkerFile().exists()
+                ? pm.openProject(locator, true, false)     // restore=true (Docker: different owner)
+                : pm.createProject(locator, repo, false);  // non-null repo => server-bound
+            this.ghidraProject = null;                     // no GhidraProject wrapper for a shared project
+            this.project = p;
+            if (p != null) {
+                Msg.info(this, "Mounted shared project '" + name + "' in " + parentDir
+                    + " bound to repo '" + (repo != null ? repo.getName() : "?") + "'");
+            }
+            return p != null;
+        } catch (Exception e) {
+            Msg.error(this, "Failed to open/create shared project: " + e.getMessage(), e);
             return false;
         }
     }

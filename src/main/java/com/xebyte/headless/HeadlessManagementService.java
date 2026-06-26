@@ -113,17 +113,82 @@ public class HeadlessManagementService {
         }
     }
 
-    @McpTool(path = "/open_project", method = "POST", description = "Open an existing Ghidra project (.gpr file or directory)", category = "headless")
+    @McpTool(path = "/open_project", method = "POST",
+            description = "Open a Ghidra project. Local: pass `path` (.gpr file or directory). "
+                + "Server-bound shared: pass `repo` (a Ghidra Server repository name) instead — "
+                + "the project is created-or-opened bound to that repo so list_project_files / "
+                + "open_program can enumerate and open the repo's programs, and get_project_info "
+                + "reports project_server_bound:true. The local cache (parentDir) persists so "
+                + "restarts re-open rather than recreate. Auto-connects to the configured server "
+                + "if needed. `path` and `repo` are mutually exclusive.",
+            category = "headless")
     public Response openProject(
-            @Param(value = "path", source = ParamSource.BODY) String projectPath) {
-        if (projectPath == null || projectPath.isEmpty()) {
-            return Response.err("Project path required");
+            @Param(value = "path", source = ParamSource.BODY,
+                description = "Local project path (.gpr file or directory). Mutually exclusive with repo.") String projectPath,
+            @Param(value = "repo", source = ParamSource.BODY,
+                description = "Ghidra Server repository to mount as a shared project. Mutually exclusive with path.") String repo,
+            @Param(value = "parentDir", source = ParamSource.BODY, defaultValue = "/projects",
+                description = "Local cache dir for the shared project (only used with repo).") String parentDir,
+            @Param(value = "name", source = ParamSource.BODY,
+                description = "Shared project name (only used with repo; defaults to the repo name).") String name) {
+        boolean wantShared = repo != null && !repo.trim().isEmpty();
+        boolean wantLocal = projectPath != null && !projectPath.trim().isEmpty();
+        if (wantShared && wantLocal) {
+            return Response.err("Pass either `path` (local) or `repo` (shared), not both");
+        }
+        if (wantShared) {
+            return mountSharedProject(repo, parentDir, name);
+        }
+        if (!wantLocal) {
+            return Response.err("Project path required (or pass `repo` to mount a shared project)");
         }
         boolean success = programProvider.openProject(projectPath);
         if (success) {
             return Response.text("{\"success\": true, \"project\": \"" + ServiceUtils.escapeJson(programProvider.getProjectName()) + "\"}");
         }
         return Response.err("Failed to open project: " + projectPath);
+    }
+
+    /**
+     * Create-or-open a server-bound (shared) project mounted to {@code repo}. Shared
+     * with the env-guarded startup mount in {@code GhidraMCPHeadlessServer.launch()} via
+     * {@link HeadlessProgramProvider#openOrCreateSharedProject}.
+     */
+    private Response mountSharedProject(String repo, String parentDir, String name) {
+        String projDir = (parentDir != null && !parentDir.isEmpty()) ? parentDir : "/projects";
+        String projName = (name != null && !name.isEmpty()) ? name : repo;
+
+        // The shared project binds to the repo via the credentials the server manager
+        // registered with ClientUtil — ensure a live connection first (mirrors
+        // openProgramFromServer) so the mount doesn't prompt and fail in headless mode.
+        if (!serverManager.isConnected()) {
+            String connResult = serverManager.connect();
+            if (!serverManager.isConnected()) {
+                return Response.err("Not connected to Ghidra server (auto-connect failed): " + connResult);
+            }
+        }
+
+        ghidra.framework.client.RepositoryAdapter ra;
+        try {
+            ra = serverManager.getRepositoryAdapter(repo);
+        } catch (Exception e) {
+            return Response.err("Could not access repository '" + repo + "': " + e.getMessage());
+        }
+        if (ra == null) {
+            return Response.err("Repository not found on server: " + repo);
+        }
+
+        if (!programProvider.openOrCreateSharedProject(projDir, projName, ra)) {
+            return Response.err("Failed to mount shared project '" + projName + "' bound to repo '" + repo + "'");
+        }
+
+        Map<String, Object> ok = new LinkedHashMap<>();
+        ok.put("success", true);
+        ok.put("project", programProvider.getProjectName());
+        ok.put("repo", repo);
+        HeadlessProgramProvider.ServerBindingInfo binding = programProvider.getProjectServerInfo();
+        ok.put("project_server_bound", binding != null && binding.serverBound);
+        return Response.ok(ok);
     }
 
     @McpTool(path = "/close_project", method = "POST", description = "Close the currently open project", category = "headless")

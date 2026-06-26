@@ -1929,9 +1929,12 @@
       "params": [
         "headless",
         "path",
-        "program"
+        "program",
+        "repo",
+        "parentDir",
+        "name"
       ],
-      "description": "Open an existing Ghidra project (.gpr file or directory). GUI mode adds optional `headless` (default true) to suppress auto-launching CodeBrowser, and optional `program` to auto-launch CodeBrowser for a specific file when headless=false. Headless server ignores the extra params."
+      "description": "Open a Ghidra project. Local: pass `path` (.gpr file or directory). Server-bound shared (headless): pass `repo` (a Ghidra Server repository name) instead — the project is created-or-opened bound to that repo so list_project_files / open_program can enumerate and open the repo's programs, and get_project_info reports project_server_bound:true. `parentDir` (default /projects) is the persistent local cache so restarts re-open rather than recreate; `name` defaults to the repo name. `path` and `repo` are mutually exclusive. GUI mode adds optional `headless` (default true) to suppress auto-launching CodeBrowser, and optional `program` to auto-launch CodeBrowser for a specific file when headless=false."
     },
     {
       "path": "/project/info",

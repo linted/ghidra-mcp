@@ -229,6 +229,21 @@ public class GhidraServerManager {
     }
 
     /**
+     * Public accessor for a connected {@link RepositoryAdapter}, used by callers that
+     * need to mount a server-bound (shared) project. Ensures a live server connection
+     * first (idempotent — reuses the existing cached connection when already up), then
+     * delegates to the cached {@link #getRepository}.
+     *
+     * @throws IOException if the server is unreachable / not connected
+     */
+    public synchronized RepositoryAdapter getRepositoryAdapter(String repoName) throws IOException {
+        if (!connected || serverAdapter == null || !serverAdapter.isConnected()) {
+            connect();
+        }
+        return getRepository(repoName);
+    }
+
+    /**
      * Get or create a RepositoryAdapter for the specified repository.
      */
     private RepositoryAdapter getRepository(String repoName) throws IOException {
