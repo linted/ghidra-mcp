@@ -89,4 +89,22 @@ public interface ProgramProvider {
         Program program = getProgram(name);
         return program != null ? program : getCurrentProgram();
     }
+
+    /**
+     * Open a program from the currently open project by path using a headless
+     * (no {@code PluginTool}) code path.
+     *
+     * <p>GUI-backed providers have no headless open capability and return the
+     * default {@code null}, so callers fall back to the tool-based open.
+     * {@code HeadlessProgramProvider} overrides this to open the
+     * {@code DomainFile} directly and register the program.
+     *
+     * @param path        Program path within the open project
+     * @param autoAnalyze Run auto-analysis after opening
+     * @return a {@link Response} when the provider handled the open, or
+     *         {@code null} to signal "no headless open — use the GUI path"
+     */
+    default Response openProgramByPath(String path, boolean autoAnalyze) {
+        return null;
+    }
 }

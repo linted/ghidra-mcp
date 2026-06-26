@@ -16,6 +16,7 @@
 package com.xebyte.headless;
 
 import com.xebyte.core.ProgramProvider;
+import com.xebyte.core.Response;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.app.util.importer.AutoImporter;
 import ghidra.app.util.importer.MessageLog;
@@ -46,6 +47,7 @@ import ghidra.util.task.TaskMonitor;
 import java.io.File;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -366,6 +368,72 @@ public class HeadlessProgramProvider implements ProgramProvider {
                 "Open failed (" + e.getClass().getSimpleName() + "): " + e.getMessage()
                 + (serverHint.isEmpty() ? "" : ". " + serverHint));
         }
+    }
+
+    /**
+     * Headless implementation of {@link ProgramProvider#openProgramByPath} so
+     * {@code /open_program} works without a {@code PluginTool}. Opens from the
+     * currently-open project via {@link #loadProgramFromProjectDetailed} (which
+     * registers the program), then optionally runs auto-analysis. Server
+     * shared-repo opens remain the job of {@code /open_program_from_server}.
+     */
+    @Override
+    public Response openProgramByPath(String path, boolean autoAnalyze) {
+        if (path == null || path.trim().isEmpty()) {
+            return Response.err("Program path is required");
+        }
+        ProgramLoadResult res = loadProgramFromProjectDetailed(path);
+        if (!res.success) {
+            return loadFailureResponse(res, path);
+        }
+        Program program = res.program;
+        boolean analyzed = false;
+        if (autoAnalyze) {
+            analyzed = runAnalysis(program).success;
+        }
+        Map<String, Object> ok = new LinkedHashMap<>();
+        ok.put("success", true);
+        ok.put("message", "Program opened successfully");
+        ok.put("name", program.getName());
+        ok.put("path", path);
+        ok.put("auto_analyzed", analyzed);
+        ok.put("function_count", program.getFunctionManager().getFunctionCount());
+        return Response.ok(ok);
+    }
+
+    /**
+     * Render a failed {@link ProgramLoadResult} as a structured Response with
+     * the same diagnostics shape used by {@code /load_program_from_project}
+     * (server-binding state, available paths, suggestion) so an operator can
+     * tell wrong-path from project-not-server-bound from server-unreachable.
+     * Shared by {@link #openProgramByPath} and
+     * {@code HeadlessManagementService.loadProgramFromProject}.
+     */
+    public Response loadFailureResponse(ProgramLoadResult res, String requestedPath) {
+        Map<String, Object> diagnostics = new LinkedHashMap<>();
+        diagnostics.put("project_open", hasProject());
+        diagnostics.put("project_name", getProjectName());
+        ServerBindingInfo binding = getProjectServerInfo();
+        if (binding != null) {
+            diagnostics.put("project_server_bound", binding.serverBound);
+            if (binding.serverBound) {
+                diagnostics.put("server", binding.serverInfo);
+                diagnostics.put("server_repo", binding.repoName);
+            }
+        }
+        if (res.availablePaths != null) {
+            diagnostics.put("available_program_paths", res.availablePaths);
+        }
+        if (res.serverHint != null && !res.serverHint.isEmpty()) {
+            diagnostics.put("suggestion", res.serverHint);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", false);
+        body.put("error", res.error);
+        body.put("requested_path", requestedPath);
+        body.put("diagnostics", diagnostics);
+        return Response.ok(body);
     }
 
     /** Walk the project tree collecting *Program* paths, capped at maxResults. */

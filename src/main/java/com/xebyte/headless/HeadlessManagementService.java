@@ -160,30 +160,8 @@ public class HeadlessManagementService {
         // Structured failure — exposed so a Docker-headless user can tell
         // "wrong path" from "project not bound to server" from "server
         // unreachable" without needing to read Ghidra logs in the container.
-        Map<String, Object> diagnostics = new LinkedHashMap<>();
-        diagnostics.put("project_open", true);
-        diagnostics.put("project_name", programProvider.getProjectName());
-        HeadlessProgramProvider.ServerBindingInfo binding = programProvider.getProjectServerInfo();
-        if (binding != null) {
-            diagnostics.put("project_server_bound", binding.serverBound);
-            if (binding.serverBound) {
-                diagnostics.put("server", binding.serverInfo);
-                diagnostics.put("server_repo", binding.repoName);
-            }
-        }
-        if (res.availablePaths != null) {
-            diagnostics.put("available_program_paths", res.availablePaths);
-        }
-        if (res.serverHint != null && !res.serverHint.isEmpty()) {
-            diagnostics.put("suggestion", res.serverHint);
-        }
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("success", false);
-        body.put("error", res.error);
-        body.put("requested_path", programPath);
-        body.put("diagnostics", diagnostics);
-        return Response.ok(body);
+        // Shared with /open_program's headless path via loadFailureResponse.
+        return programProvider.loadFailureResponse(res, programPath);
     }
 
     @McpTool(path = "/open_program_from_server", method = "POST",

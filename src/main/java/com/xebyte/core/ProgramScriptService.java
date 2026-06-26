@@ -758,9 +758,19 @@ public class ProgramScriptService {
             return Response.err("Program path is required");
         }
 
+        // Headless providers (no PluginTool) open via DomainFile directly and
+        // return a Response; GUI providers return null, so we fall through to
+        // the tool-based open below.
+        Response headlessOpen = programProvider.openProgramByPath(path, autoAnalyze);
+        if (headlessOpen != null) {
+            return headlessOpen;
+        }
+
         PluginTool tool = getToolFromProvider();
         if (tool == null) {
-            return Response.err("Opening programs requires GUI mode (PluginTool not available)");
+            return Response.err("Opening programs requires GUI mode (PluginTool not "
+                + "available); in headless mode use /open_program after /open_project, "
+                + "or /open_program_from_server for a Ghidra Server shared repo");
         }
 
         ghidra.framework.model.Project project = tool.getProject();
