@@ -1,7 +1,7 @@
 {
   "version": "5.14.1",
   "description": "GhidraMCP REST API Endpoint Specification",
-  "total_endpoints": 251,
+  "total_endpoints": 252,
   "categories": {
     "listing": "List program data",
     "getter": "Get specific data",
@@ -1912,6 +1912,17 @@
       "description": "Open program from project"
     },
     {
+      "path": "/open_program_from_server",
+      "method": "POST",
+      "category": "headless",
+      "params": [
+        "repo",
+        "path",
+        "read_only"
+      ],
+      "description": "Open a program directly from a Ghidra Server shared repository (ghidra://host:port/repo/path) into the headless engine — no persistent local shared project required. Auto-connects to the configured server if needed. When `read_only` is false (default), the file is checked out exclusively so edits can later be persisted with /server/version_control/checkin."
+    },
+    {
       "path": "/open_project",
       "method": "POST",
       "category": "headless",
@@ -2405,24 +2416,26 @@
       "method": "POST",
       "category": "server",
       "params": [
+        "program",
         "repo",
         "path",
         "comment",
         "keepCheckedOut"
       ],
-      "description": "Add a file to version control"
+      "description": "Add an open program to version control (first commit). Targets the open program named by `program`, or derived from the basename of `path`."
     },
     {
       "path": "/server/version_control/checkin",
       "method": "POST",
       "category": "server",
       "params": [
+        "program",
         "repo",
         "path",
         "comment",
         "keepCheckedOut"
       ],
-      "description": "Check in a version-controlled file"
+      "description": "Save and check in an open program's edits to the Ghidra Server. Targets the open program named by `program`, or derived from the basename of `path`. Requires the file to have been opened with read_only=false (checked out)."
     },
     {
       "path": "/server/version_control/checkout",
@@ -2439,10 +2452,12 @@
       "method": "POST",
       "category": "server",
       "params": [
+        "program",
         "repo",
-        "path"
+        "path",
+        "keep"
       ],
-      "description": "Undo a file checkout"
+      "description": "Undo the checkout of an open program, discarding (or keeping, via `keep`) local changes. Targets the open program named by `program`, or derived from the basename of `path`."
     },
     {
       "path": "/server/version_history",

@@ -523,22 +523,30 @@ public class GhidraMCPHeadlessServer implements GhidraLaunchable {
             sendResponse(exchange, serverManager.checkoutFile(params.get("repo"), params.get("path")));
         });
 
+        // Checkin/undo/add operate on the live, server-bound DomainFile of an
+        // open program (typically opened via /open_program_from_server) rather
+        // than the RepositoryAdapter stubs, which cannot persist edits. The
+        // target program is named explicitly via `program`, or derived from the
+        // basename of `path` for back-compat with the repo/path call shape.
         safeContext("/server/version_control/checkin", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
             boolean keepCheckedOut = parseBooleanOrDefault(params.get("keepCheckedOut"), false);
-            sendResponse(exchange, serverManager.checkinFile(
-                params.get("repo"), params.get("path"), params.get("comment"), keepCheckedOut));
+            sendResponse(exchange, programProvider.saveAndCheckin(
+                resolveServerProgramName(params), params.get("comment"), keepCheckedOut));
         });
 
         safeContext("/server/version_control/undo_checkout", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
-            sendResponse(exchange, serverManager.undoCheckout(params.get("repo"), params.get("path")));
+            boolean keep = parseBooleanOrDefault(params.get("keep"), false);
+            sendResponse(exchange, programProvider.undoServerCheckout(
+                resolveServerProgramName(params), keep));
         });
 
         safeContext("/server/version_control/add", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
-            sendResponse(exchange, serverManager.addToVersionControl(
-                params.get("repo"), params.get("path"), params.get("comment")));
+            boolean keepCheckedOut = parseBooleanOrDefault(params.get("keepCheckedOut"), true);
+            sendResponse(exchange, programProvider.addProgramToVersionControl(
+                resolveServerProgramName(params), params.get("comment"), keepCheckedOut));
         });
 
         safeContext("/server/version_history", exchange -> {
@@ -782,6 +790,26 @@ public class GhidraMCPHeadlessServer implements GhidraLaunchable {
         }
 
         return params;
+    }
+
+    /**
+     * Resolve which open program a version-control call targets. Prefers an
+     * explicit {@code program} param; otherwise derives the program name from
+     * the basename of {@code path} (a server program opened from
+     * {@code /repo/Foo.dll} is named {@code Foo.dll}). Returns null when neither
+     * is supplied, letting the provider fall back to the current program.
+     */
+    private static String resolveServerProgramName(Map<String, String> params) {
+        String program = params.get("program");
+        if (program != null && !program.isEmpty()) {
+            return program;
+        }
+        String path = params.get("path");
+        if (path == null || path.isEmpty()) {
+            return null;
+        }
+        int slash = path.lastIndexOf('/');
+        return slash >= 0 ? path.substring(slash + 1) : path;
     }
 
     private int parseIntOrDefault(String value, int defaultValue) {

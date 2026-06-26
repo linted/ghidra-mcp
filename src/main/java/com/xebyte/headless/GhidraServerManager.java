@@ -416,100 +416,14 @@ public class GhidraServerManager {
         }
     }
 
-    /**
-     * Check in a file to the repository.
-     *
-     * @param repoName Repository name
-     * @param filePath File path within the repository
-     * @param comment Check-in comment
-     * @param keepCheckedOut If true, file remains checked out after check-in
-     * @return JSON string with result
-     */
-    public String checkinFile(String repoName, String filePath, String comment, boolean keepCheckedOut) {
-        if (!connected || serverAdapter == null) {
-            return "{\"error\": \"Not connected to server.\"}";
-        }
-        try {
-            RepositoryAdapter repo = getRepository(repoName);
-            if (repo == null) {
-                return "{\"error\": \"Repository not found: " + escapeJson(repoName) + "\"}";
-            }
-            int lastSlash = filePath.lastIndexOf('/');
-            String parentPath = lastSlash > 0 ? filePath.substring(0, lastSlash) : "/";
-            String fileName = lastSlash >= 0 ? filePath.substring(lastSlash + 1) : filePath;
-            RepositoryItem item = repo.getItem(parentPath, fileName);
-            if (item == null) {
-                return "{\"error\": \"File not found in repository: " + escapeJson(filePath) + "\"}";
-            }
-            // Note: actual checkin is performed via DomainFile.checkin() on the client side.
-            // Repository adapter does not expose a direct checkin() method.
-            // Return advisory message instead.
-            if (item == null) return "{\"error\": \"Item check was null\"}"; // suppress lint
-            return "{\"status\": \"checked_in\", \"repository\": \"" + escapeJson(repoName) +
-                   "\", \"path\": \"" + escapeJson(filePath) + "\", \"keep_checked_out\": " + keepCheckedOut + "}";
-        } catch (Exception e) {
-            lastError = e.getMessage();
-            return "{\"error\": \"Checkin failed: " + escapeJson(e.getMessage()) + "\"}";
-        }
-    }
-
-    /**
-     * Undo a checkout, discarding local changes.
-     *
-     * @param repoName Repository name
-     * @param filePath File path within the repository
-     * @return JSON string with result
-     */
-    public String undoCheckout(String repoName, String filePath) {
-        if (!connected || serverAdapter == null) {
-            return "{\"error\": \"Not connected to server.\"}";
-        }
-        try {
-            RepositoryAdapter repo = getRepository(repoName);
-            if (repo == null) {
-                return "{\"error\": \"Repository not found: " + escapeJson(repoName) + "\"}";
-            }
-            int lastSlash = filePath.lastIndexOf('/');
-            String parentPath = lastSlash > 0 ? filePath.substring(0, lastSlash) : "/";
-            String fileName = lastSlash >= 0 ? filePath.substring(lastSlash + 1) : filePath;
-            // undoCheckout is performed via DomainFile on the client side
-            // Return advisory - the checkout record can be terminated via terminateCheckout
-            if (repo == null) return "{\"error\": \"Repo not found\"}"; // suppress lint
-            return "{\"status\": \"checkout_undone\", \"repository\": \"" + escapeJson(repoName) +
-                   "\", \"path\": \"" + escapeJson(filePath) + "\"}";
-        } catch (Exception e) {
-            lastError = e.getMessage();
-            return "{\"error\": \"Undo checkout failed: " + escapeJson(e.getMessage()) + "\"}";
-        }
-    }
-
-    /**
-     * Add a file to version control.
-     *
-     * @param repoName Repository name
-     * @param filePath File path within the repository
-     * @param comment Initial version comment
-     * @return JSON string with result
-     */
-    public String addToVersionControl(String repoName, String filePath, String comment) {
-        if (!connected || serverAdapter == null) {
-            return "{\"error\": \"Not connected to server.\"}";
-        }
-        try {
-            RepositoryAdapter repo = getRepository(repoName);
-            if (repo == null) {
-                return "{\"error\": \"Repository not found: " + escapeJson(repoName) + "\"}";
-            }
-            // Adding to version control is done via DomainFile on the client side;
-            // here we verify the repository is accessible
-            return "{\"status\": \"repository_verified\", \"repository\": \"" + escapeJson(repoName) +
-                   "\", \"path\": \"" + escapeJson(filePath) +
-                   "\", \"note\": \"Use the project's DomainFile to complete add-to-version-control.\"}";
-        } catch (Exception e) {
-            lastError = e.getMessage();
-            return "{\"error\": \"Add to version control failed: " + escapeJson(e.getMessage()) + "\"}";
-        }
-    }
+    // NOTE: checkin / undo-checkout / add-to-version-control are intentionally
+    // NOT implemented here. The RepositoryAdapter layer cannot open a Program or
+    // perform a real DomainFile.checkin(), so the previous methods were advisory
+    // no-op stubs that falsely reported success. Those operations now run against
+    // the live server-bound DomainFile in HeadlessProgramProvider
+    // (saveAndCheckin / undoServerCheckout / addProgramToVersionControl), wired to
+    // the /server/version_control/* routes. checkoutFile() stays here because the
+    // server-side EXCLUSIVE lock it takes is still valid and useful.
 
     /**
      * Get the version history of a file in the repository.
