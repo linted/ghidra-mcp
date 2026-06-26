@@ -107,4 +107,21 @@ public interface ProgramProvider {
     default Response openProgramByPath(String path, boolean autoAnalyze) {
         return null;
     }
+
+    /**
+     * List files/folders in the currently open project using a headless
+     * (no {@code PluginTool}) code path.
+     *
+     * <p>GUI-backed providers have no headless listing capability and return
+     * the default {@code null}, so callers fall back to the tool-based listing.
+     * {@code HeadlessProgramProvider} overrides this to walk the open project's
+     * {@code ProjectData} directly.
+     *
+     * @param folderPath Project folder path to list, or {@code null}/empty for root
+     * @return a {@link Response} when the provider handled the listing, or
+     *         {@code null} to signal "no headless listing — use the GUI path"
+     */
+    default Response listProjectFiles(String folderPath) {
+        return null;
+    }
 }

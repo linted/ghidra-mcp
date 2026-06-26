@@ -602,6 +602,14 @@ public class ProgramScriptService {
     @McpTool(path = "/list_project_files", description = "List files in the current project", category = "program")
     public Response listProjectFiles(
             @Param(value = "folder", description = "Project folder path") String folderPath) {
+        // Headless providers (no PluginTool) list from the open project's
+        // ProjectData directly and return a Response; GUI providers return
+        // null, so we fall through to the tool-based listing below.
+        Response headlessList = programProvider.listProjectFiles(folderPath);
+        if (headlessList != null) {
+            return headlessList;
+        }
+
         PluginTool tool = getToolFromProvider();
         if (tool == null) {
             return Response.err("Project listing requires GUI mode (PluginTool not available)");

@@ -436,6 +436,57 @@ public class HeadlessProgramProvider implements ProgramProvider {
         return Response.ok(body);
     }
 
+    /**
+     * Headless implementation of {@link ProgramProvider#listProjectFiles} so
+     * {@code /list_project_files} works without a {@code PluginTool}. Walks the
+     * currently open project's {@link ProjectData} and returns the same shape as
+     * the GUI path: {@code project_name}, {@code current_folder}, {@code folders},
+     * and {@code files[]} with per-file metadata.
+     */
+    @Override
+    public Response listProjectFiles(String folderPath) {
+        if (project == null) {
+            return Response.err("No project is currently open");
+        }
+
+        DomainFolder targetFolder = project.getProjectData().getRootFolder();
+        if (folderPath != null && !folderPath.trim().isEmpty() && !folderPath.equals("/")) {
+            String cleanPath = folderPath.startsWith("/") ? folderPath.substring(1) : folderPath;
+            for (String part : cleanPath.split("/")) {
+                if (part.isEmpty()) continue;
+                DomainFolder nextFolder = targetFolder.getFolder(part);
+                if (nextFolder == null) {
+                    return Response.err("Folder not found: " + folderPath);
+                }
+                targetFolder = nextFolder;
+            }
+        }
+
+        List<String> folderNames = new ArrayList<>();
+        for (DomainFolder subfolder : targetFolder.getFolders()) {
+            folderNames.add(subfolder.getName());
+        }
+
+        List<Map<String, Object>> fileList = new ArrayList<>();
+        for (DomainFile file : targetFolder.getFiles()) {
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("name", file.getName());
+            info.put("path", file.getPathname());
+            info.put("content_type", file.getContentType());
+            info.put("version", file.getVersion());
+            info.put("is_read_only", file.isReadOnly());
+            info.put("is_versioned", file.isVersioned());
+            fileList.add(info);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("project_name", project.getName());
+        body.put("current_folder", targetFolder.getPathname());
+        body.put("folders", folderNames);
+        body.put("files", fileList);
+        return Response.ok(body);
+    }
+
     /** Walk the project tree collecting *Program* paths, capped at maxResults. */
     private void collectProgramPaths(DomainFolder folder, String pathPrefix, List<String> out, int maxResults) {
         if (out.size() >= maxResults) return;
